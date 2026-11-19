@@ -7,7 +7,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
-<title>한글 문서 뷰어 (hwp·hwpx)</title>
+<title>한글뷰어</title>
 <style>
 :root{--bg:#ffffff;--paper:#ffffff;--ink:#111111;--sub:#666666;--line:#d4d4d4;--bar:#ffffff;--accent:#2d5a46;--fs:17px}
 [data-theme=dark]{--bg:#121212;--paper:#1c1c1c;--ink:#e8e8e8;--sub:#9a9a9a;--line:#3a3a3a;--bar:#1c1c1c;--accent:#8bc4a4}
@@ -39,7 +39,7 @@ code{font-family:ui-monospace,Menlo,monospace;font-size:.9em}
 </head>
 <body>
 <header id="bar">
-<span class="t" id="title">한글 문서 뷰어</span>
+<span class="t" id="title">한글뷰어</span>
 <label class="btn main" style="position:relative;overflow:hidden">열기<input id="f" type="file" style="position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;cursor:pointer"></label>
 <button id="sm" aria-label="글자 작게">가−</button>
 <button id="lg" aria-label="글자 크게">가+</button>
@@ -293,6 +293,137 @@ function findImg(ref, ctx) {
   }
   return null;
 }
+
+function mm2px(s) {
+  const m = /([\d.]+)\s*(mm|pt|px)?/.exec(s || '');
+  if (!m) return 1;
+  let v = +m[1]; const u = m[2] || 'mm';
+  if (u === 'mm') v *= 3.78; else if (u === 'pt') v *= 1.333;
+  return Math.max(1, Math.round(v));
+}
+function bfCss(bf) {
+  if (!bf) return '';
+  let s = '';
+  if (bf.bg) s += 'background:' + bf.bg + ';color:#111;';
+  for (const k of ['left', 'right', 'top', 'bottom']) {
+    const b = bf[k]; if (!b) continue;
+    s += (!b.type || b.type === 'NONE') ? 'border-' + k + ':0;' : 'border-' + k + ':' + mm2px(b.width) + 'px solid ' + (b.color && b.color !== 'none' ? b.color : '#000') + ';';
+  }
+  return s;
+}
+const PAL = ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#70AD47', '#9E480E', '#997300'];
+function niceStep(r) { const p = Math.pow(10, Math.floor(Math.log10(r))), f = r / p; return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p; }
+function chartSvg(doc, W, H) {
+  const cs = doc.documentElement;
+  const chartEl = kids(cs, 'chart')[0];
+  const plot = kids(chartEl, 'plotArea')[0];
+  const kindEl = kids(plot).find(e => /^(barChart|bar3DChart|lineChart|line3DChart|pieChart|pie3DChart|doughnutChart|areaChart)$/.test(ln(e)));
+  if (!kindEl) throw new Error('chart kind');
+  const kind = ln(kindEl).replace('3D', '').replace('doughnutChart', 'pieChart').replace('areaChart', 'lineChart');
+  const isPie = kind === 'pieChart', isLine = kind === 'lineChart';
+  const clr = e => { const x = e && all(e, 'srgbClr')[0]; return x ? '#' + x.getAttribute('val') : null; };
+  const ptsOf = e => e ? all(e, 'pt').map(pt => ({ i: +pt.getAttribute('idx'), v: (all(pt, 'v')[0] || {}).textContent })) : [];
+  const flag = (dl, name) => { const x = dl && kids(dl, name)[0]; return !!x && x.getAttribute('val') !== '0'; };
+  const sers = kids(kindEl, 'ser').map((s, si) => {
+    const nm = (all(kids(s, 'tx')[0] || s, 'v')[0] || {}).textContent || '';
+    const catEl = kids(s, 'cat')[0], valEl = kids(s, 'val')[0] || kids(s, 'yVal')[0];
+    const cats = []; ptsOf(catEl).forEach(p => { cats[p.i] = p.v; });
+    const vals = []; ptsOf(valEl).forEach(p => { vals[p.i] = +p.v; });
+    const sp = kids(s, 'spPr')[0];
+    const lineClr = sp && kids(sp, 'ln')[0] ? clr(kids(sp, 'ln')[0]) : null;
+    const color = (isLine ? lineClr : null) || clr(sp) || PAL[si % PAL.length];
+    const pc = {}; kids(s, 'dPt').forEach(d => { const c2 = clr(kids(d, 'spPr')[0]); if (c2) pc[+kids(d, 'idx')[0].getAttribute('val')] = c2; });
+    const dl = kids(s, 'dLbls')[0] || kids(kindEl, 'dLbls')[0];
+    return { name: nm, cats, vals, color, pc, showVal: flag(dl, 'showVal'), showPct: flag(dl, 'showPercent') };
+  });
+  if (!sers.length) throw new Error('no series');
+  const cats = sers[0].cats, n = Math.max(cats.length, ...sers.map(s => s.vals.length));
+  const titleEl = kids(chartEl, 'title')[0];
+  const title = titleEl ? all(titleEl, 't').map(x => x.textContent).join('') : '';
+  const hasLegend = !!kids(chartEl, 'legend')[0];
+  const fs = Math.max(10, Math.round(W / 52));
+  const top = title ? fs * 2.6 : 14, legH = hasLegend ? fs * 2.2 : 0, xl = isPie ? 0 : fs * 1.8;
+  const left = isPie ? 10 : fs * 3.4, right = 12;
+  const pw = W - left - right, ph = H - top - legH - xl - 6;
+  const e = esc;
+  let g = '';
+  if (title) g += '<text x="' + W / 2 + '" y="' + fs * 1.6 + '" text-anchor="middle" font-weight="700" font-size="' + (fs * 1.2).toFixed(1) + '">' + e(title) + '</text>';
+  if (!isPie) {
+    const va = kids(plot, 'valAx')[0], sc = va && kids(va, 'scaling')[0];
+    const gv = nm => { const x = sc && kids(sc, nm)[0]; return x ? +x.getAttribute('val') : null; };
+    const all_ = [].concat(...sers.map(s => s.vals.filter(v => isFinite(v))));
+    const dmin = Math.min(...all_), dmax = Math.max(...all_);
+    let ymin = gv('min'), ymax = gv('max');
+    if (ymin === null) ymin = isLine ? dmin - (dmax - dmin) * 0.15 : Math.min(0, dmin);
+    if (ymax === null) ymax = dmax + (dmax - ymin) * 0.1;
+    const step = niceStep((ymax - ymin) / 5);
+    if (gv('min') === null) ymin = Math.floor(ymin / step) * step;
+    if (gv('max') === null) ymax = Math.ceil(ymax / step) * step;
+    const Y = v => top + ph * (1 - (Math.min(Math.max(v, ymin), ymax) - ymin) / (ymax - ymin));
+    for (let v = ymin; v <= ymax + step / 1e6; v += step) {
+      const y = Y(v);
+      g += '<line x1="' + left + '" x2="' + (W - right) + '" y1="' + y.toFixed(1) + '" y2="' + y.toFixed(1) + '" stroke="currentColor" stroke-opacity=".2"/>' +
+        '<text x="' + (left - 6) + '" y="' + (y + fs * 0.35).toFixed(1) + '" text-anchor="end" font-size="' + (fs * 0.85).toFixed(1) + '">' + +v.toFixed(6) + '</text>';
+    }
+    const gw = pw / n;
+    for (let i = 0; i < n; i++) g += '<text x="' + (left + gw * (i + 0.5)).toFixed(1) + '" y="' + (top + ph + fs * 1.4).toFixed(1) + '" text-anchor="middle" font-size="' + (fs * 0.9).toFixed(1) + '">' + e(cats[i] == null ? '' : cats[i]) + '</text>';
+    if (isLine) {
+      sers.forEach(s => {
+        const pts = s.vals.map((v, i) => isFinite(v) ? [left + gw * (i + 0.5), Y(v), v] : null).filter(Boolean);
+        g += '<polyline fill="none" stroke="' + s.color + '" stroke-width="2.5" points="' + pts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ') + '"/>';
+        pts.forEach(p => {
+          g += '<circle cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="4" fill="' + s.color + '"/>';
+          if (s.showVal) g += '<text x="' + p[0].toFixed(1) + '" y="' + (p[1] - 8).toFixed(1) + '" text-anchor="middle" font-size="' + (fs * 0.85).toFixed(1) + '">' + p[2] + '</text>';
+        });
+      });
+    } else {
+      const m = sers.length, bw = gw * 0.7 / m, y0 = Y(Math.max(ymin, 0));
+      sers.forEach((s, si) => s.vals.forEach((v, i) => {
+        if (!isFinite(v)) return;
+        const x = left + gw * i + gw * 0.15 + bw * si, y = Y(v), yy = Math.min(y, y0), hh = Math.abs(y0 - y);
+        g += '<rect x="' + x.toFixed(1) + '" y="' + yy.toFixed(1) + '" width="' + (bw * 0.96).toFixed(1) + '" height="' + hh.toFixed(1) + '" fill="' + (s.pc[i] || s.color) + '"/>';
+        if (s.showVal) g += '<text x="' + (x + bw * 0.48).toFixed(1) + '" y="' + (yy - 4).toFixed(1) + '" text-anchor="middle" font-size="' + (fs * 0.85).toFixed(1) + '">' + v + '</text>';
+      }));
+    }
+    g += '<line x1="' + left + '" x2="' + (W - right) + '" y1="' + Y(Math.max(ymin, 0)).toFixed(1) + '" y2="' + Y(Math.max(ymin, 0)).toFixed(1) + '" stroke="currentColor" stroke-opacity=".5"/>';
+  } else {
+    const s = sers[0], vals = s.vals.map(v => isFinite(v) && v > 0 ? v : 0), sum = vals.reduce((a, b) => a + b, 0) || 1;
+    const cx = W / 2, cy = top + ph / 2 + xl / 2, r = Math.min(pw, ph + xl) / 2 * 0.92;
+    let a0 = -Math.PI / 2;
+    vals.forEach((v, i) => {
+      const a1 = a0 + v / sum * Math.PI * 2, col = s.pc[i] || PAL[i % PAL.length];
+      const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0), x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+      if (v > 0) g += vals.filter(x => x > 0).length === 1
+        ? '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + col + '"/>'
+        : '<path d="M' + cx + ',' + cy + ' L' + x0.toFixed(1) + ',' + y0.toFixed(1) + ' A' + r + ',' + r + ' 0 ' + (a1 - a0 > Math.PI ? 1 : 0) + ' 1 ' + x1.toFixed(1) + ',' + y1.toFixed(1) + ' Z" fill="' + col + '" stroke="#fff" stroke-width="1.5"/>';
+      if (v > 0 && (s.showPct || s.showVal)) {
+        const am = (a0 + a1) / 2, lx = cx + r * 0.62 * Math.cos(am), ly = cy + r * 0.62 * Math.sin(am);
+        g += '<text x="' + lx.toFixed(1) + '" y="' + (ly + fs * 0.35).toFixed(1) + '" text-anchor="middle" font-size="' + (fs * 0.95).toFixed(1) + '" font-weight="700" fill="#111">' + (s.showPct ? Math.round(v / sum * 100) + '%' : v) + '</text>';
+      }
+      a0 = a1;
+    });
+  }
+  if (hasLegend) {
+    const items = isPie ? vals_(sers[0]).map((_, i) => ({ name: cats[i] || '', color: sers[0].pc[i] || PAL[i % PAL.length] })) : sers.map(s => ({ name: s.name, color: s.color }));
+    const wd = items.map(it => fs * 0.62 * it.name.length + fs * 2.2), tot = wd.reduce((a, b) => a + b, 0);
+    let x = (W - tot) / 2; const y = H - fs * 0.9;
+    items.forEach((it, i) => {
+      g += '<rect x="' + x.toFixed(1) + '" y="' + (y - fs * 0.7).toFixed(1) + '" width="' + (fs * 0.8).toFixed(1) + '" height="' + (fs * 0.8).toFixed(1) + '" fill="' + it.color + '"/>' +
+        '<text x="' + (x + fs).toFixed(1) + '" y="' + y.toFixed(1) + '" font-size="' + (fs * 0.9).toFixed(1) + '">' + e(it.name) + '</text>';
+      x += wd[i];
+    });
+  }
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" style="max-width:100%;height:auto;color:inherit" font-family="inherit" fill="currentColor" role="img" aria-label="' + e(title || '차트') + '">' + g + '</svg>';
+}
+function vals_(s) { return s.vals; }
+function xChart(el, ctx) {
+  const d = ctx.charts[el.getAttribute('chartIDRef')];
+  if (!d) return '<div class="pic ph">[차트]</div>';
+  const sz = kids(el, 'sz')[0];
+  let w = sz ? Math.round((+sz.getAttribute('width') || 0) / 75) : 600, h = sz ? Math.round((+sz.getAttribute('height') || 0) / 75) : 360;
+  if (!(w > 80)) w = 600; if (!(h > 60)) h = 360;
+  try { return '<div class="pic">' + chartSvg(d, w, h) + '</div>'; } catch (e) { return '<div class="pic ph">[차트를 그리지 못했어요]</div>'; }
+}
 function xPic(el, ctx) {
   const im = all(el, 'img')[0];
   const f = findImg(im && im.getAttribute('binaryItemIDRef'), ctx);
@@ -305,14 +436,30 @@ function xPic(el, ctx) {
   return '<div class="pic ph">[그림' + (f && f.bad ? ': ' + esc(f.bad) + ' 형식은 표시할 수 없어요' : '') + ']</div>';
 }
 function xTable(tbl, ctx) {
-  let h = '<div class="tw"><table>';
-  for (const tr of kids(tbl, 'tr')) {
+  const sz = kids(tbl, 'sz')[0];
+  const pct = sz && ctx.textW ? Math.min(100, Math.round((+sz.getAttribute('width') || 0) / ctx.textW * 100)) : 100;
+  const trs = kids(tbl, 'tr');
+  const cols = +tbl.getAttribute('colCnt') || 0, ws = [];
+  for (const tr of trs) for (const tc of kids(tr, 'tc')) {
+    const ad = kids(tc, 'cellAddr')[0], sp = kids(tc, 'cellSpan')[0], cz = kids(tc, 'cellSz')[0];
+    if (ad && cz && (!sp || (+sp.getAttribute('colSpan') || 1) === 1)) ws[+ad.getAttribute('colAddr')] = +cz.getAttribute('width') || 0;
+  }
+  let colg = '';
+  if (cols && ws.length >= cols && ws.slice(0, cols).every(x => x > 0)) {
+    const tot = ws.slice(0, cols).reduce((a, b) => a + b, 0);
+    colg = '<colgroup>' + ws.slice(0, cols).map(x => '<col style="width:' + (x / tot * 100).toFixed(2) + '%">').join('') + '</colgroup>';
+  }
+  const tbf = ctx.bf[tbl.getAttribute('borderFillIDRef')];
+  let h = '<div class="tw"><table style="width:' + (pct || 100) + '%;table-layout:' + (colg ? 'fixed' : 'auto') + '">' + colg;
+  for (const tr of trs) {
     h += '<tr>';
     for (const tc of kids(tr, 'tc')) {
       const sp = kids(tc, 'cellSpan')[0];
       const cs = sp ? +sp.getAttribute('colSpan') || 1 : 1, rs = sp ? +sp.getAttribute('rowSpan') || 1 : 1;
       const sl = kids(tc, 'subList')[0];
-      h += '<td colspan="' + cs + '" rowspan="' + rs + '">' + (sl ? xParas(sl, ctx) : '') + '</td>';
+      let st = bfCss(ctx.bf[tc.getAttribute('borderFillIDRef')] || null);
+      if (sl && /CENTER/i.test(sl.getAttribute('vertAlign') || '')) st += 'vertical-align:middle;';
+      h += '<td colspan="' + cs + '" rowspan="' + rs + '"' + (st ? ' style="' + st + '"' : '') + '>' + (sl ? xParas(sl, ctx) : '') + '</td>';
     }
     h += '</tr>';
   }
@@ -331,6 +478,7 @@ function xPara(p, ctx) {
       if (n === 't') txt += textOf(c);
       else if (n === 'tbl') { inner += wrap(txt, cs); txt = ''; flush(); out.push(xTable(c, ctx)); }
       else if (n === 'pic') { inner += wrap(txt, cs); txt = ''; flush(); out.push(xPic(c, ctx)); }
+      else if (n === 'chart') { inner += wrap(txt, cs); txt = ''; flush(); out.push(xChart(c, ctx)); }
       else if (n === 'equation') { const sc = all(c, 'script')[0]; if (sc) txt += eqHtml(sc.textContent); }
       else if (n === 'ctrl' || n === 'secPr') continue;
       else {
@@ -352,7 +500,7 @@ async function parseHwpx(buf) {
   const secs = names.filter(n => /^Contents\/section\d+\.xml$/i.test(n)).sort((a, b) => num(a) - num(b));
   if (!secs.length) throw new Error('hwpx 본문(section)을 찾지 못했어요. 암호가 걸렸거나 손상된 파일일 수 있어요.');
   const parse = async n => new DOMParser().parseFromString(await zip.file(n).async('string'), 'application/xml');
-  const ctx = { char: {}, para: {}, img: {}, map: {} };
+  const ctx = { char: {}, para: {}, img: {}, map: {}, bf: {}, charts: {}, textW: 42520 };
   const hn = names.find(n => /^Contents\/header\.xml$/i.test(n));
   if (hn) {
     const h = await parse(hn);
@@ -365,6 +513,11 @@ async function parseHwpx(buf) {
         ul: !!(ul && ul.getAttribute('type') && ul.getAttribute('type') !== 'NONE'),
         st: !!(so && so.getAttribute('shape') && so.getAttribute('shape') !== 'NONE')
       };
+    }
+    for (const b of all(h, 'borderFill')) {
+      const side = nm => { const x = kids(b, nm)[0]; return x ? { type: x.getAttribute('type'), width: x.getAttribute('width'), color: x.getAttribute('color') } : null; };
+      const wb = all(b, 'winBrush')[0], fc = wb && wb.getAttribute('faceColor');
+      ctx.bf[b.getAttribute('id')] = { bg: fc && fc !== 'none' ? fc : null, left: side('leftBorder'), right: side('rightBorder'), top: side('topBorder'), bottom: side('bottomBorder') };
     }
     for (const p of all(h, 'paraPr')) {
       const al = all(p, 'align')[0];
@@ -381,8 +534,14 @@ async function parseHwpx(buf) {
     else e = { bad: ext };
     ctx.img[id] = e; ctx.img[n] = e;
   }
+  for (const n of names) if (/^Chart\/[^/]+\.xml$/i.test(n)) { try { ctx.charts[n] = await parse(n); } catch (e) { /* skip */ } }
   let html = '';
-  for (const n of secs) html += xParas((await parse(n)).documentElement, ctx);
+  for (const n of secs) {
+    const sd = await parse(n);
+    const pp = all(sd, 'pagePr')[0], mg = pp && all(pp, 'margin')[0];
+    if (pp && mg) { const tw = (+pp.getAttribute('width') || 0) - (+mg.getAttribute('left') || 0) - (+mg.getAttribute('right') || 0); if (tw > 10000) ctx.textW = tw; }
+    html += xParas(sd.documentElement, ctx);
+  }
   return { html, note: '' };
 }
 
