@@ -25,7 +25,7 @@ html,body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans 
 .tw{overflow-x:auto;margin:8px 0}
 table{border-collapse:collapse;min-width:100%}
 td{border:1px solid var(--line);padding:4px 8px;vertical-align:top}
-td .p{line-height:1.55}
+#doc td .p{line-height:1.55}
 .ii{vertical-align:middle;max-width:100%}
 .eq math{font-size:1.15em}
 .pic{margin:8px 0;text-align:center}
@@ -42,7 +42,10 @@ code{font-family:ui-monospace,Menlo,monospace;font-size:.9em}
 #vp{overflow:auto;-webkit-overflow-scrolling:touch}
 #wrap{margin:0 auto;position:relative}
 .sheet{position:absolute;left:0;top:0;background:var(--paper);box-shadow:0 0 0 1px var(--line),0 2px 10px rgba(0,0,0,.12);transform-origin:0 0;overflow:hidden}
-.pg{font-size:13.333px;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere}
+.pg{font-size:var(--pgfs,13.333px);line-height:1.6;word-break:keep-all;overflow-wrap:anywhere;-webkit-text-size-adjust:none;text-size-adjust:none}
+.sheet,#meas{-webkit-text-size-adjust:none;text-size-adjust:none}
+.pg td{padding:2px 5px}
+.pg .p{margin:0}
 .sheet .pg{position:absolute;overflow:hidden}
 #meas{position:absolute;left:-99999px;top:0;visibility:hidden}
 #nav{display:none;position:fixed;left:0;right:0;bottom:0;z-index:6;padding:8px 12px calc(8px + env(safe-area-inset-bottom));background:var(--bar);border-top:1px solid var(--line);align-items:center;justify-content:center;gap:10px}
@@ -105,15 +108,24 @@ function wrap(html, cs) {
   const st = [];
   if (cs.pt) st.push('font-size:' + Math.min(3, Math.max(0.6, cs.pt / 10)).toFixed(2) + 'em');
   if (cs.color && /^#[0-9a-f]{6}$/i.test(cs.color) && cs.color.toLowerCase() !== '#000000') st.push('color:' + cs.color);
+  if (cs.ls) st.push('letter-spacing:' + cs.ls.toFixed(3) + 'em');
   if (cs.bold) st.push('font-weight:700');
   if (cs.italic) st.push('font-style:italic');
   const dec = [cs.ul ? 'underline' : '', cs.st ? 'line-through' : ''].filter(Boolean).join(' ');
   if (dec) st.push('text-decoration:' + dec);
   return st.length ? '<span style="' + st.join(';') + '">' + html + '</span>' : html;
 }
-function pdiv(inner, align) {
-  const a = align ? ' style="text-align:' + align + '"' : '';
-  return '<div class="p"' + a + '>' + (inner || '&#8203;') + '</div>';
+function pdiv(inner, align, pr) {
+  const st = [];
+  if (align) st.push('text-align:' + align);
+  if (pr) {
+    if (pr.lh) st.push('line-height:' + pr.lh);
+    if (pr.mt) st.push('margin-top:' + pr.mt + 'px');
+    if (pr.mb) st.push('margin-bottom:' + pr.mb + 'px');
+    if (pr.pl) st.push('padding-left:' + pr.pl + 'px');
+    if (pr.ti) st.push('text-indent:' + pr.ti + 'px');
+  }
+  return '<div class="p"' + (st.length ? ' style="' + st.join(';') + '"' : '') + '>' + (inner || '&#8203;') + '</div>';
 }
 
 
@@ -462,6 +474,32 @@ function xPic(el, ctx) {
   }
   return '<div class="pic ph">[그림' + (f && f.bad ? ': ' + esc(f.bad) + ' 형식은 표시할 수 없어요' : '') + ']</div>';
 }
+const U = 1 / 75;
+function lsOf(c) {
+  const rt = kids(c, 'ratio')[0], sp = kids(c, 'spacing')[0];
+  const r = rt ? (+rt.getAttribute('hangul') || 100) : 100, g = sp ? (+sp.getAttribute('hangul') || 0) : 0;
+  const v = (r - 100) / 100 + g / 100;
+  return Math.abs(v) < 0.005 ? 0 : Math.max(-0.3, Math.min(0.3, v));
+}
+function paraCss(p) {
+  const o = {};
+  const ls = all(p, 'lineSpacing')[0];
+  if (ls) {
+    const t = ls.getAttribute('type'), v = +ls.getAttribute('value') || 0;
+    if (/PERCENT/i.test(t || '') && v >= 50 && v <= 400) o.lh = (v / 100).toFixed(2);
+    else if (/FIXED|BETWEEN/i.test(t || '') && v > 0 && v < 20000 && /FIXED/i.test(t)) o.lh = (v * U).toFixed(1) + 'px';
+  }
+  const mg = all(p, 'margin')[0];
+  if (mg) {
+    const g = nm => { const x = kids(mg, nm)[0]; return x ? (+x.getAttribute('value') || 0) * U : 0; };
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const pv = g('prev'), nx = g('next'), lf = g('left'), it = g('intent');
+    if (pv) o.mt = +clamp(pv, 0, 60).toFixed(1);
+    if (nx) o.mb = +clamp(nx, 0, 60).toFixed(1);
+    if (lf || it) { o.pl = +clamp(Math.max(lf, lf + Math.min(0, it)), 0, 300).toFixed(1); o.ti = +clamp(it, -150, 150).toFixed(1); }
+  }
+  return o;
+}
 function xTable(tbl, ctx) {
   const sz = kids(tbl, 'sz')[0];
   const pct = sz && ctx.textW ? Math.min(100, Math.round((+sz.getAttribute('width') || 0) / ctx.textW * 100)) : 100;
@@ -477,6 +515,9 @@ function xTable(tbl, ctx) {
     colg = '<colgroup>' + ws.slice(0, cols).map(x => '<col style="width:' + (x / tot * 100).toFixed(2) + '%">').join('') + '</colgroup>';
   }
   const tbf = ctx.bf[tbl.getAttribute('borderFillIDRef')];
+  const im = kids(tbl, 'inMargin')[0];
+  const pad = el => { if (!el) return ''; const g = a => Math.max(0, Math.min(40, (+el.getAttribute(a) || 0) * U)).toFixed(1); return 'padding:' + g('top') + 'px ' + g('right') + 'px ' + g('bottom') + 'px ' + g('left') + 'px;'; };
+  const tpad = pad(im);
   let h = '<div class="tw"><table style="width:' + (pct || 100) + '%;table-layout:' + (colg ? 'fixed' : 'auto') + '">' + colg;
   for (const tr of trs) {
     h += '<tr>';
@@ -485,6 +526,8 @@ function xTable(tbl, ctx) {
       const cs = sp ? +sp.getAttribute('colSpan') || 1 : 1, rs = sp ? +sp.getAttribute('rowSpan') || 1 : 1;
       const sl = kids(tc, 'subList')[0];
       let st = bfCss(ctx.bf[tc.getAttribute('borderFillIDRef')] || null);
+      const cm = kids(tc, 'cellMargin')[0];
+      st += (tc.getAttribute('hasMargin') === '1' && cm) ? pad(cm) : tpad;
       if (sl && /CENTER/i.test(sl.getAttribute('vertAlign') || '')) st += 'vertical-align:middle;';
       h += '<td colspan="' + cs + '" rowspan="' + rs + '"' + (st ? ' style="' + st + '"' : '') + '>' + (sl ? xParas(sl, ctx) : '') + '</td>';
     }
@@ -496,7 +539,7 @@ function xPara(p, ctx) {
   const pr = ctx.para[p.getAttribute('paraPrIDRef')] || {};
   const out = [];
   let inner = '';
-  const flush = () => { if (inner) { out.push(pdiv(inner, pr.align)); inner = ''; } };
+  const flush = () => { if (inner) { out.push(pdiv(inner, pr.align, pr)); inner = ''; } };
   for (const run of kids(p, 'run')) {
     const cs = ctx.char[run.getAttribute('charPrIDRef')] || {};
     let txt = '';
@@ -516,7 +559,7 @@ function xPara(p, ctx) {
     inner += wrap(txt, cs);
   }
   flush();
-  return out.length ? out.join('') : pdiv('', pr.align);
+  return out.length ? out.join('') : pdiv('', pr.align, pr);
 }
 function xParas(parent, ctx) { return kids(parent, 'p').map(p => xPara(p, ctx)).join(''); }
 
@@ -536,7 +579,7 @@ async function parseHwpx(buf) {
       const ul = ch.find(x => ln(x) === 'underline'), so = ch.find(x => ln(x) === 'strikeout');
       ctx.char[c.getAttribute('id')] = {
         pt: (+c.getAttribute('height') || 0) / 100, color: c.getAttribute('textColor'),
-        bold: has('bold'), italic: has('italic'),
+        bold: has('bold'), italic: has('italic'), ls: lsOf(c),
         ul: !!(ul && ul.getAttribute('type') && ul.getAttribute('type') !== 'NONE'),
         st: !!(so && so.getAttribute('shape') && so.getAttribute('shape') !== 'NONE')
       };
@@ -548,7 +591,7 @@ async function parseHwpx(buf) {
     }
     for (const p of all(h, 'paraPr')) {
       const al = all(p, 'align')[0];
-      ctx.para[p.getAttribute('id')] = { align: al ? ALIGN[al.getAttribute('horizontal')] : null };
+      ctx.para[p.getAttribute('id')] = Object.assign({ align: al ? ALIGN[al.getAttribute('horizontal')] : null }, paraCss(p));
     }
   }
   const hpf = names.find(n => /content\.hpf$/i.test(n));
@@ -857,8 +900,24 @@ function nextImgs(root){
   var im=[].slice.call(root.querySelectorAll('img'));
   return Promise.all(im.map(function(x){return x.decode?x.decode().catch(function(){}):0}));
 }
+async function calcScale(w){
+  var m=$('meas');m.style.width=w+'px';
+  m.style.setProperty('--pgfs','13.333px');
+  var txt='가나다라마바사아자차카타파하 ';var s='';for(var i=0;i<12;i++)s+=txt;
+  m.innerHTML='<span id="prb" style="white-space:nowrap;font-size:20px">'+s+'</span>';
+  var got=document.getElementById('prb').getBoundingClientRect().width;
+  var c=document.createElement('canvas').getContext('2d');
+  var fam=getComputedStyle(m).fontFamily;
+  c.font='20px '+fam;var exp=c.measureText(s).width;
+  m.innerHTML='';
+  var f=exp>0?got/exp:1;
+  if(!(f>0.9&&f<3)||Math.abs(f-1)<0.04)f=1;
+  return f;
+}
 async function paginate(html,page){
   PG=page;
+  var sc=await calcScale(page.cw);
+  document.documentElement.style.setProperty('--pgfs',(13.333/sc).toFixed(3)+'px');
   var m=$('meas');m.style.width=page.cw+'px';m.innerHTML=html;
   await nextImgs(m);
   var out=[],buf=[],hs=[],used=0,limit=page.bh;

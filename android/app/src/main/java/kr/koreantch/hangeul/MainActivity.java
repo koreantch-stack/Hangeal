@@ -38,6 +38,8 @@ public class MainActivity extends Activity {
         s.setSupportZoom(true);
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
+        s.setTextZoom(100);
+        s.setLayoutAlgorithm(WebSettings.LayoutAlgorithm.NORMAL);
 
         web.setWebViewClient(new WebViewClient() {
             @Override
