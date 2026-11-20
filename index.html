@@ -35,6 +35,20 @@ td .p{line-height:1.55}
 code{font-family:ui-monospace,Menlo,monospace;font-size:.9em}
 .empty{color:var(--sub);text-align:center;padding:40px 10px;line-height:1.8}
 .empty b{color:var(--ink)}
+
+.pb{height:0;border-top:1px dashed var(--line);margin:10px 0}
+#pager{display:none;padding:8px 0 76px;touch-action:pan-y}
+#pager.on{display:block}
+#vp{overflow:auto;-webkit-overflow-scrolling:touch}
+#wrap{margin:0 auto;position:relative}
+.sheet{position:absolute;left:0;top:0;background:var(--paper);box-shadow:0 0 0 1px var(--line),0 2px 10px rgba(0,0,0,.12);transform-origin:0 0;overflow:hidden}
+.pg{font-size:13.333px;line-height:1.6;word-break:keep-all;overflow-wrap:anywhere}
+.sheet .pg{position:absolute;overflow:hidden}
+#meas{position:absolute;left:-99999px;top:0;visibility:hidden}
+#nav{display:none;position:fixed;left:0;right:0;bottom:0;z-index:6;padding:8px 12px calc(8px + env(safe-area-inset-bottom));background:var(--bar);border-top:1px solid var(--line);align-items:center;justify-content:center;gap:10px}
+#nav.on{display:flex}
+#nav button{flex:0 0 auto;min-width:64px}
+#nav .pn{min-width:84px;text-align:center;font-weight:700;font-size:15px}
 </style>
 </head>
 <body>
@@ -43,9 +57,13 @@ code{font-family:ui-monospace,Menlo,monospace;font-size:.9em}
 <label class="btn main" style="position:relative;overflow:hidden">열기<input id="f" type="file" style="position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;cursor:pointer"></label>
 <button id="sm" aria-label="글자 작게">가−</button>
 <button id="lg" aria-label="글자 크게">가+</button>
+<button id="md" aria-label="보기 방식">이어</button>
 <button id="th" aria-label="화면 밝기">밤</button>
 </header>
 <div id="note" style="display:none"></div>
+<div id="pager"><div id="vp"><div id="wrap"><div class="sheet" id="sheet"><div class="pg" id="pgb"></div></div></div></div></div>
+<div id="nav"><button id="pv">이전</button><span class="pn" id="pn"></span><button id="nx">다음</button></div>
+<div id="meas" class="pg"></div>
 <main id="doc"><div class="empty"><b>열기</b>를 눌러 hwpx 또는 hwp 파일을 골라 주세요.<br>파일은 이 기기 안에서만 읽고, 밖으로 보내지 않아요.</div></main>
 <script>
 /*!
@@ -294,6 +312,15 @@ function findImg(ref, ctx) {
   return null;
 }
 
+const PB = '<div class="pb"></div>';
+function mkPage(w, h, l, r, t, b, land) {
+  w = w || 59528; h = h || 84188; l = l == null || isNaN(l) ? 8504 : l; r = r == null || isNaN(r) ? 8504 : r;
+  t = t == null || isNaN(t) ? 9921 : t; b = b == null || isNaN(b) ? 8504 : b;
+  const k = 1 / 75;
+  let cw = (w - l - r) * k, bh = (h - t - b) * k;
+  if (cw < 200 || bh < 200) { l = r = 8504; t = 9921; b = 8504; cw = (w - l - r) * k; bh = (h - t - b) * k; }
+  return { w: w * k, h: h * k, l: l * k, t: t * k, cw, bh };
+}
 function mm2px(s) {
   const m = /([\d.]+)\s*(mm|pt|px)?/.exec(s || '');
   if (!m) return 1;
@@ -535,14 +562,19 @@ async function parseHwpx(buf) {
     ctx.img[id] = e; ctx.img[n] = e;
   }
   for (const n of names) if (/^Chart\/[^/]+\.xml$/i.test(n)) { try { ctx.charts[n] = await parse(n); } catch (e) { /* skip */ } }
-  let html = '';
+  let html = '', page = null, si = 0;
   for (const n of secs) {
     const sd = await parse(n);
     const pp = all(sd, 'pagePr')[0], mg = pp && all(pp, 'margin')[0];
-    if (pp && mg) { const tw = (+pp.getAttribute('width') || 0) - (+mg.getAttribute('left') || 0) - (+mg.getAttribute('right') || 0); if (tw > 10000) ctx.textW = tw; }
-    html += xParas(sd.documentElement, ctx);
+    if (pp && mg) {
+      const tw = (+pp.getAttribute('width') || 0) - (+mg.getAttribute('left') || 0) - (+mg.getAttribute('right') || 0); if (tw > 10000) ctx.textW = tw;
+      if (!page) page = mkPage(+pp.getAttribute('width'), +pp.getAttribute('height'), +mg.getAttribute('left'), +mg.getAttribute('right'),
+        (+mg.getAttribute('top') || 0) + (+mg.getAttribute('header') || 0), (+mg.getAttribute('bottom') || 0) + (+mg.getAttribute('footer') || 0), /WIDELY/i.test(pp.getAttribute('landscape') || ''));
+    }
+    if (si++ > 0) html += PB;
+    html += kids(sd.documentElement, 'p').map(p => (p.getAttribute('pageBreak') === '1' ? PB : '') + xPara(p, ctx)).join('');
   }
-  return { html, note: '' };
+  return { html, page: page || mkPage(), note: '' };
 }
 
 /* ---------------- HWP (binary, best effort) ---------------- */
@@ -765,14 +797,23 @@ function parseHwp(buf) {
     .filter(x => /BodyText\/Section\d+$/i.test(x.p))
     .map(x => ({ n: +x.p.match(/Section(\d+)$/i)[1], e: x.e })).sort((a, b) => a.n - b.n);
   if (!secs.length) throw new Error('hwp 본문을 찾지 못했어요.');
-  let html = '';
+  let html = '', page = null, si = 0;
+  const findRec = (list, tag) => { for (const r of list) { if (r.tag === tag) return r; const f = findRec(r.children, tag); if (f) return f; } return null; };
   for (const s of secs) {
     const d = streamOf(s.e, compressed);
     if (!d) continue;
     const top = treeOf(recs(d));
-    html += top.children.filter(x => x.tag === 66).map(p => hPara(p, ctx)).join('');
+    if (!page) {
+      const pd = findRec(top.children, 73);
+      if (pd && pd.data.length >= 40) {
+        const dv = dvOf(pd.data), g = o => dv.getUint32(o, true);
+        page = mkPage(g(0), g(4), g(8), g(12), g(16) + g(24), g(20) + g(28), !!(g(36) & 1));
+      }
+    }
+    if (si++ > 0) html += PB;
+    html += top.children.filter(x => x.tag === 66).map(p => ((p.data.length > 11 && (p.data[11] & 4)) ? PB : '') + hPara(p, ctx)).join('');
   }
-  return { html, note: 'hwp 파일은 글자, 표, 그림 위주로 보여 줘요. 도형과 일부 서식은 빠질 수 있어요. 정확히 보려면 한글에서 hwpx로 저장해 열어 주세요.' };
+  return { html, page: page || mkPage(), note: 'hwp 파일은 글자, 표, 그림 위주로 보여 줘요. 도형과 일부 서식은 빠질 수 있어요. 정확히 보려면 한글에서 hwpx로 저장해 열어 주세요.' };
 }
 
 async function render(buf) {
@@ -788,21 +829,122 @@ root.HwpCore = { render, esc, eq: eqToMathML };
 <script>
 (function(){
 var $=function(i){return document.getElementById(i)};
-var fs=17,theme='light';
-try{fs=+localStorage.getItem('hv_fs')||17;theme=localStorage.getItem('hv_th')||'light'}catch(e){}
-function apply(){document.documentElement.style.setProperty('--fs',fs+'px');document.documentElement.setAttribute('data-theme',theme);$('th').textContent=theme==='dark'?'낮':'밤';try{localStorage.setItem('hv_fs',fs);localStorage.setItem('hv_th',theme)}catch(e){}}
+var fs=17,theme='light',mode='page',zoom=1;
+try{fs=+localStorage.getItem('hv_fs')||17;theme=localStorage.getItem('hv_th')||'light';mode=localStorage.getItem('hv_md')||'page'}catch(e){}
+var pages=[],pi=0,PG=null,cur=null;
+function apply(){document.documentElement.style.setProperty('--fs',fs+'px');document.documentElement.setAttribute('data-theme',theme);$('th').textContent=theme==='dark'?'낮':'밤';$('md').textContent=mode==='page'?'이어':'쪽';try{localStorage.setItem('hv_fs',fs);localStorage.setItem('hv_th',theme);localStorage.setItem('hv_md',mode)}catch(e){}}
 apply();
-$('sm').onclick=function(){fs=Math.max(12,fs-1);apply()};
-$('lg').onclick=function(){fs=Math.min(30,fs+1);apply()};
-$('th').onclick=function(){theme=theme==='dark'?'light':'dark';apply()};
 function note(msg,err){var n=$('note');if(!msg){n.style.display='none';return}n.textContent=msg;n.className=err?'err':'';n.style.display='block'}
+function fit(){
+  if(!PG||!pages.length)return;
+  var avail=Math.min(window.innerWidth,1100)-16,s=avail/PG.w*zoom;
+  var sh=$('sheet');
+  sh.style.width=PG.w+'px';sh.style.height=PG.h+'px';sh.style.transform='scale('+s+')';
+  var w=$('wrap');w.style.width=(PG.w*s)+'px';w.style.height=(PG.h*s)+'px';
+  var b=$('pgb');b.style.left=PG.l+'px';b.style.top=PG.t+'px';b.style.width=PG.cw+'px';b.style.height=PG.bh+'px';
+}
+function show(i,keep){
+  if(!pages.length)return;
+  pi=Math.max(0,Math.min(pages.length-1,i));
+  $('pgb').innerHTML=pages[pi];
+  $('pn').textContent=(pi+1)+' / '+pages.length;
+  $('pv').disabled=pi===0;$('nx').disabled=pi===pages.length-1;
+  $('pv').style.opacity=pi===0?.4:1;$('nx').style.opacity=pi===pages.length-1?.4:1;
+  fit();
+  if(!keep)window.scrollTo(0,0);
+}
+function nextImgs(root){
+  var im=[].slice.call(root.querySelectorAll('img'));
+  return Promise.all(im.map(function(x){return x.decode?x.decode().catch(function(){}):0}));
+}
+async function paginate(html,page){
+  PG=page;
+  var m=$('meas');m.style.width=page.cw+'px';m.innerHTML=html;
+  await nextImgs(m);
+  var out=[],buf=[],hs=[],used=0,limit=page.bh;
+  var list=[].slice.call(m.children);
+  var tops=list.map(function(n){return n.offsetTop});
+  var endY=m.scrollHeight;
+  function flush(){if(buf.length)out.push(buf.join(''));buf=[];hs=[];used=0}
+  function brk(){
+    // keep a short heading-like block together with what follows it
+    if(buf.length>1&&hs[hs.length-1]<=52&&!/^<div class="tw"/.test(buf[buf.length-1])){
+      var c=buf.pop(),ch=hs.pop();used-=ch;flush();buf=[c];hs=[ch];used=ch;
+    }else flush();
+  }
+  function addTable(n,h){
+    var tb=n.querySelector('table'),rows=[].slice.call(tb.rows);
+    var nt=n.getBoundingClientRect().top;
+    var rt=rows.map(function(r){return r.getBoundingClientRect().top-nt});
+    var rb=rows.map(function(r){return r.getBoundingClientRect().bottom-nt});
+    var over=Math.max(0,h-(rb[rb.length-1]-rt[0])),k=0;
+    while(k<rows.length){
+      var first=k,st=rt[k],avail=limit-used;
+      while(k<rows.length&&(rb[k]-st)+over<=avail)k++;
+      if(k===first){ if(buf.length){brk();continue} k=first+1; }
+      var c=n.cloneNode(true),cr=[].slice.call(c.querySelector('table').rows);
+      cr.forEach(function(r,idx){if(idx<first||idx>=k)r.parentNode.removeChild(r)});
+      buf.push(c.outerHTML);hs.push(rb[k-1]-st+over);used+=rb[k-1]-st+over;
+      if(k<rows.length)flush();
+    }
+  }
+  for(var i=0;i<list.length;i++){
+    var n=list[i];
+    if(n.classList.contains('pb')){flush();continue}
+    var h=(i+1<list.length?tops[i+1]:endY)-tops[i];
+    if(used+h<=limit){buf.push(n.outerHTML);hs.push(h);used+=h;continue}
+    var tb=n.querySelector('table');
+    if(tb&&tb.rows.length>1&&!tb.querySelector('[rowspan]')&&!n.querySelector('table table')){addTable(n,h);continue}
+    brk();buf.push(n.outerHTML);hs.push(h);used+=h;
+    if(h>limit)flush();
+  }
+  flush();
+  m.innerHTML='';
+  return out.filter(function(x){return x.replace(/<[^>]*>/g,'').trim()||/<(img|svg|table|math)/.test(x)});
+}
+function layout(){
+  var page=mode==='page'&&pages.length;
+  $('pager').className=page?'on':'';$('nav').className=page?'on':'';
+  $('doc').style.display=page?'none':'';
+}
+async function setMode(){
+  apply();
+  if(!cur)return;
+  if(mode==='page'){
+    note('쪽 나누는 중…');
+    try{pages=await paginate(cur.html,cur.page);}catch(e){pages=[];note('쪽 나누기에 실패해서 이어서 보여 줘요. '+(e&&e.message?e.message:e),true);}
+    if(pages.length){note(cur.note||'');zoom=1;show(Math.min(pi,pages.length-1));}
+  }else{
+    $('doc').innerHTML=cur.html||'<div class="empty">표시할 내용이 없어요.</div>';
+    note(cur.note||'');
+  }
+  layout();
+}
+$('sm').onclick=function(){if(mode==='page'&&pages.length){zoom=Math.max(.6,zoom/1.25);fit()}else{fs=Math.max(12,fs-1);apply()}};
+$('lg').onclick=function(){if(mode==='page'&&pages.length){zoom=Math.min(3,zoom*1.25);fit()}else{fs=Math.min(30,fs+1);apply()}};
+$('th').onclick=function(){theme=theme==='dark'?'light':'dark';apply()};
+$('md').onclick=function(){mode=mode==='page'?'flow':'page';setMode()};
+$('pv').onclick=function(){show(pi-1)};
+$('nx').onclick=function(){show(pi+1)};
+document.addEventListener('keydown',function(e){if(mode!=='page')return;if(e.key==='ArrowRight'||e.key==='PageDown')show(pi+1);if(e.key==='ArrowLeft'||e.key==='PageUp')show(pi-1)});
+(function(){var x0=0,y0=0,t0=0;
+var vp=$('pager');
+vp.addEventListener('touchstart',function(e){var t=e.touches[0];x0=t.clientX;y0=t.clientY;t0=Date.now()},{passive:true});
+vp.addEventListener('touchend',function(e){
+  if(zoom>1.05)return;
+  var t=e.changedTouches[0],dx=t.clientX-x0,dy=t.clientY-y0;
+  if(Date.now()-t0<700&&Math.abs(dx)>55&&Math.abs(dx)>Math.abs(dy)*1.6){show(dx<0?pi+1:pi-1)}
+},{passive:true});
+})();
+window.addEventListener('resize',fit);
 async function openBuf(name,buf){
   $('title').textContent=name;
   note('여는 중…');
   try{
     var r=await HwpCore.render(buf);
-    $('doc').innerHTML=r.html||'<div class="empty">표시할 내용이 없어요.</div>';
-    note(r.note||'');
+    cur=r;pi=0;pages=[];
+    $('doc').innerHTML='';
+    await setMode();
     window.scrollTo(0,0);
   }catch(e){
     note('열지 못했어요. '+(e&&e.message?e.message:e),true);
